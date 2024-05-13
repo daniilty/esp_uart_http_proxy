@@ -1,7 +1,7 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 
-#define TERMINATOR "\r\n"
+#define TERMINATOR "\n\r"
 
 AsyncWebServer server(4498);
 SemaphoreHandle_t mux = NULL; 
@@ -65,9 +65,8 @@ static int writeSerialData(uint8_t *data, size_t len) {
 static void onUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
   if (xSemaphoreTake(mux, portMAX_DELAY)) {
     if(!index){
-      Serial.print("BGN\r\n");
-      Serial.print(filename);
-      Serial.print("\r\n");
+      printSerial("BGN");
+      printSerial(filename);
     }
     
     int tries = 0;
@@ -82,7 +81,7 @@ static void onUpload(AsyncWebServerRequest *request, String filename, size_t ind
     }
   
     if(final){
-      Serial.print("FIN\r\n");
+      printSerial("FIN");
     }
     
     xSemaphoreGive(mux);
@@ -100,8 +99,8 @@ static String readSerialBlock() {
 }
 
 static String readSerial() {
-  String dat = Serial.readStringUntil('\r');
-  Serial.readStringUntil('\n');
+  String dat = Serial.readStringUntil('\n');
+  Serial.readStringUntil('\r');
 
   return dat;
 }
@@ -167,8 +166,8 @@ void setup() {
   );
   
   // Print the ESP32's IP address
-  Serial.print("WIF\r\n");
-  Serial.print(getServerAddr());
+  printSerial("WIF");
+  printSerial(getServerAddr());
 
   // Define a route to serve the HTML page
   server.on("/is_esp", HTTP_GET, [](AsyncWebServerRequest* request) {
