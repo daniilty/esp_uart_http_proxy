@@ -1,7 +1,8 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <esp_task_wdt.h>
 
-#define TERMINATOR "\n\r"
+#define TERMINATOR "e\r\n"
 
 AsyncWebServer server(4498);
 SemaphoreHandle_t mux = NULL; 
@@ -10,53 +11,53 @@ static void onRequest(AsyncWebServerRequest *request){
   request->send(404);
 }
 
-static int printSerial(String data) {
+static void printSerial(String data) {
+  while (Serial.availableForWrite()<data.length())
+    delay(10);
   Serial.print(data);
-  Serial.print(TERMINATOR);
 }
 
-static int printSerial() {
-    Serial.print(TERMINATOR);
+static void printSerial() {
 }
 
-static int printSerial(uint8_t c) {
+static void printSerial(unsigned int c) {
+  while (!Serial.availableForWrite())
+    delay(10);
   Serial.write(c);
-  Serial.print(TERMINATOR);
+}
+
+static void printSerial(uint8_t c) {
+  while (!Serial.availableForWrite())
+    delay(10);
+  Serial.write(c);
 }
 
 static int writeSerialData(uint8_t *data, size_t len) {
-  int tries = 0;
-
-  while(!Serial.availableForWrite()) {
-    if (tries > 15) {
-      return 0;
-    }
-
-    delay(100);
-    tries++;
-  } 
-
   uint8_t hash = 0;
   int n = 0;
   for(size_t i=0; i<len; i++,n++){
     if (n == 0) {
       printSerial("PRT");
+      Serial.write(len);
     }
 
-    Serial.write(data[i]);
+    printSerial(data[i]);
     hash ^= data[i];
-    if (n == 125) {
-      printSerial();
+    if (n == 127) {
       printSerial(hash);
       hash = 0;
       n = 0;
+      if (!readSerialBlock().equals("ACK")) {
+        i = 0;
+      }
     }
   }
 
-  printSerial();
-  printSerial(hash);
-  if (!readSerialBlock().equals("ACK")) {
-    return 0;
+  if (n != 0) {
+    printSerial(hash);
+    if (!readSerialBlock().equals("ACK")) {
+      return 0;
+    }
   }
 
   return 1;
@@ -66,6 +67,7 @@ static void onUpload(AsyncWebServerRequest *request, String filename, size_t ind
   if (xSemaphoreTake(mux, portMAX_DELAY)) {
     if(!index){
       printSerial("BGN");
+      printSerial(filename.length());
       printSerial(filename);
     }
     
@@ -76,7 +78,7 @@ static void onUpload(AsyncWebServerRequest *request, String filename, size_t ind
         request->send(500, "application/json", "{\"error\":\"failed to write serial\"}");
         return;
       }
-      delay(100);
+      delay(10);
       tries++;
     }
   
@@ -92,7 +94,7 @@ static String readSerialBlock() {
   String dat = readSerial();
   while (dat.isEmpty()) {
     dat = readSerial();
-    delay(500);
+    delay(10);
   }
 
   return dat;
@@ -100,13 +102,21 @@ static String readSerialBlock() {
 
 static String readSerial() {
   String dat = Serial.readStringUntil('\n');
-  Serial.readStringUntil('\r');
 
   return dat;
 }
 
 static int connWifi() {
   String cmd = readSerialBlock();
+
+  if(cmd.equals("INF")) {
+    printSerial("NIT");
+    return 0;
+  }
+
+  if(!cmd.equals("WSP")) {
+    return 0;
+  }
   if (strcmp(cmd.c_str(), "WSP") != 0) {
     return 0;
   }
@@ -119,38 +129,50 @@ static int connWifi() {
 
   String ssid = ssidPassword.substring(0, pos);
   String password = ssidPassword.substring(pos+1, ssidPassword.length());
-  WiFi.begin(ssid, password);  
+  WiFi.begin(ssid, password); 
 
   while (1) {
     switch (WiFi.status()) {
       case WL_NO_SSID_AVAIL:
-        Serial.print("ENS\r\n");
+        printSerial("ENS");
         return 0;
       case WL_CONNECT_FAILED:
-        Serial.print("ECF\r\n");
+        printSerial("ECF");
         return 0;
       case WL_CONNECTION_LOST:
-        Serial.print("ECL\r\n");
+        printSerial("ECL");
         return 0;
       case WL_NO_SHIELD:
-        Serial.print("ENS\r\n");
+        printSerial("ESH");
         return 0;
       case WL_CONNECTED:
         return 1;
       default:
-        delay(1000);
+        delay(100);
         break;
     }
   }
 
-  return 1;
+  return 0;
 }
 
 static String getServerAddr() {
   return WiFi.localIP().toString() + ":4498";
 }
 
+static void printWifiInfo() {
+  printSerial("WIF");
+  const char *inf = getServerAddr().c_str();
+  size_t l = strlen(inf);
+  while (Serial.availableForWrite()<l+1)
+    delay(10);
+  Serial.write(l);
+  Serial.write(inf);
+}
+
 void setup() {
+  esp_task_wdt_init(50, false);
+  //Serial.begin(76800);
   Serial.begin(115200);
   mux = xSemaphoreCreateMutex();
   
@@ -161,13 +183,12 @@ void setup() {
     "loopXTask",   // Name of the task
     2048,      // Stack size in bytes
     NULL,      // Task input parameter
-    1,         // Priority of the task
+    tskIDLE_PRIORITY, // Priority of the task
     NULL       // Task handle.
   );
   
   // Print the ESP32's IP address
-  printSerial("WIF");
-  printSerial(getServerAddr());
+  printWifiInfo();
 
   // Define a route to serve the HTML page
   server.on("/is_esp", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -198,19 +219,16 @@ static void loopXTask (void* pvParameters) {
       }
       
       xSemaphoreGive(mux);
-      delay(200);
+      delay(2000);
     }
   }
 }
 
 static void handleTask(String task) {
-  if (task.equals("INF")) {
-    printSerial("WIF");
-    printSerial(getServerAddr());
+  if (task.equals("INF") || task.equals("WSP")) {
+    printWifiInfo();
   } else if (task.equals("PNG")) {
     printSerial("PNG");
-  } else {
-    printSerial("ERR");
   }
 }
 
