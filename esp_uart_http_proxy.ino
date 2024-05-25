@@ -3,9 +3,42 @@
 #include <esp_task_wdt.h>
 
 #define TERMINATOR "e\r\n"
+#define B_PIN 4
+#define G_PIN 5
+#define R_PIN 6
 
 AsyncWebServer server(4498);
 SemaphoreHandle_t mux = NULL; 
+
+static void setWhite() {
+  digitalWrite(B_PIN, LOW);
+  digitalWrite(G_PIN, LOW);
+  digitalWrite(R_PIN, LOW);
+}
+
+static void setPurple() {
+  digitalWrite(B_PIN, LOW);
+  digitalWrite(G_PIN, HIGH);
+  digitalWrite(R_PIN, LOW);
+}
+
+static void setRed() {
+  digitalWrite(B_PIN, HIGH);
+  digitalWrite(G_PIN, HIGH);
+  digitalWrite(R_PIN, LOW);
+}
+
+static void setBlue() {
+  digitalWrite(B_PIN, LOW);
+  digitalWrite(G_PIN, HIGH);
+  digitalWrite(R_PIN, HIGH);
+}
+
+static void setGreen() {
+  digitalWrite(B_PIN, HIGH);
+  digitalWrite(G_PIN, LOW);
+  digitalWrite(R_PIN, HIGH);
+}
 
 static void onRequest(AsyncWebServerRequest *request){
   request->send(404);
@@ -33,31 +66,31 @@ static void printSerial(uint8_t c) {
 }
 
 static int writeSerialData(uint8_t *data, size_t len) {
+  const size_t max_part_size = 127;
   uint8_t hash = 0;
   int n = 0;
-  for(size_t i=0; i<len; i++,n++){
+  for(size_t i=0; i<len; i++){
     if (n == 0) {
       printSerial("PRT");
-      Serial.write(len);
+      size_t part_len = len-i;
+      if (part_len >= max_part_size) part_len = max_part_size;
+  
+      printSerial(part_len);
     }
 
     printSerial(data[i]);
+    n++;
     hash ^= data[i];
-    if (n == 127) {
+
+    if (n == max_part_size) {
       printSerial(hash);
       hash = 0;
       n = 0;
-      if (!readSerialBlock().equals("ACK")) {
-        i = 0;
-      }
     }
   }
 
   if (n != 0) {
     printSerial(hash);
-    if (!readSerialBlock().equals("ACK")) {
-      return 0;
-    }
   }
 
   return 1;
@@ -67,23 +100,23 @@ static void onUpload(AsyncWebServerRequest *request, String filename, size_t ind
   if (xSemaphoreTake(mux, portMAX_DELAY)) {
     if(!index){
       printSerial("BGN");
-      printSerial(filename.length());
+      filename.trim();
+      printSerial(strlen(filename.c_str()));
       printSerial(filename);
+      setBlue();
+    } else {
+      setPurple();
     }
     
-    int tries = 0;
-    while(!writeSerialData(data, len)) {
-      if (tries > 5) {
-        xSemaphoreGive(mux);
-        request->send(500, "application/json", "{\"error\":\"failed to write serial\"}");
-        return;
-      }
-      delay(10);
-      tries++;
+    if(!writeSerialData(data, len)) {
+      xSemaphoreGive(mux);
+      request->send(500, "application/json", "{\"error\":\"failed to write serial\"}");
+      return;
     }
   
     if(final){
       printSerial("FIN");
+      setGreen();
     }
     
     xSemaphoreGive(mux);
@@ -130,7 +163,7 @@ static int connWifi() {
   String ssid = ssidPassword.substring(0, pos);
   String password = ssidPassword.substring(pos+1, ssidPassword.length());
   WiFi.begin(ssid, password); 
-
+  setBlue();
   while (1) {
     switch (WiFi.status()) {
       case WL_NO_SSID_AVAIL:
@@ -146,6 +179,7 @@ static int connWifi() {
         printSerial("ESH");
         return 0;
       case WL_CONNECTED:
+        setGreen();
         return 1;
       default:
         delay(100);
@@ -172,11 +206,18 @@ static void printWifiInfo() {
 
 void setup() {
   esp_task_wdt_init(50, false);
-  //Serial.begin(76800);
-  Serial.begin(115200);
+  Serial.begin(76800);
+  // Serial.begin(115200);
   mux = xSemaphoreCreateMutex();
+
+  pinMode(B_PIN, OUTPUT);
+  pinMode(G_PIN, OUTPUT);
+  pinMode(R_PIN, OUTPUT);
+  setWhite();
   
-  while (!connWifi()) {}
+  while (!connWifi()) {
+    setRed();
+  }
 
   xTaskCreate(
     loopXTask,     // Function to implement the task
@@ -219,7 +260,7 @@ static void loopXTask (void* pvParameters) {
       }
       
       xSemaphoreGive(mux);
-      delay(2000);
+      delay(1000);
     }
   }
 }
